@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SeatLock — Movie Booking</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:#09090b;color:#f4f4f5}
+header{padding:22px 6%;border-bottom:1px solid #27272a;display:flex;justify-content:space-between;align-items:center}
+.logo{font-size:24px;font-weight:800}.logo span{color:#a78bfa}
+main{max-width:1100px;margin:35px auto;padding:0 20px}.hero{padding:30px 0}.hero h1{font-size:42px;margin:0 0 10px}.muted{color:#a1a1aa}
+.card{background:#18181b;border:1px solid #27272a;border-radius:18px;padding:22px;margin:18px 0}
+.show{display:flex;justify-content:space-between;gap:20px;align-items:center}.show h3{margin:0 0 6px}
+button{border:0;border-radius:10px;padding:12px 18px;background:#7c3aed;color:#fff;font-weight:700;cursor:pointer}button:disabled{opacity:.4;cursor:not-allowed}
+.screen{margin:25px auto 35px;max-width:600px;text-align:center;padding:10px;border-radius:50%;border-top:5px solid #d4d4d8;color:#a1a1aa}
+.row{display:flex;justify-content:center;gap:8px;margin:9px}.seat{width:48px;height:40px;padding:0;background:#27272a;border:1px solid #52525b}.seat.available:hover{background:#3f3f46}.seat.selected{background:#7c3aed}.seat.held{background:#b45309}.seat.booked{background:#dc2626}.legend{display:flex;gap:15px;justify-content:center;flex-wrap:wrap;color:#a1a1aa}.dot{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:5px}.summary{display:flex;justify-content:space-between;align-items:center;gap:15px}.timer{font-size:22px;font-weight:800;color:#fbbf24}.toast{position:fixed;right:20px;bottom:20px;background:#27272a;padding:15px 18px;border-radius:12px;display:none}
+</style>
+</head>
+<body>
+<header><div class="logo">Seat<span>Lock</span></div><div class="muted">Movie & Event Booking</div></header>
+<main>
+<section class="hero"><h1>Book your seat.</h1><p class="muted">A production-style demo focused on safe concurrent seat reservation.</p></section>
+<div id="shows"></div>
+<div id="booking" style="display:none"></div>
+</main>
+<div id="toast" class="toast"></div>
+<script>
+const userId="demo-user";
+let currentShow=null, selected=[], expiresAt=null, timer=null;
+
+const toast=(m)=>{const t=document.getElementById("toast");t.textContent=m;t.style.display="block";setTimeout(()=>t.style.display="none",2500)}
+async function api(url,opt){const r=await fetch(url,{headers:{"Content-Type":"application/json"},...opt});const j=await r.json();if(!r.ok)throw j;return j}
+
+async function loadShows(){
+ const j=await api("/api/shows");
+ document.getElementById("shows").innerHTML=j.data.map(s=>`
+ <div class="card show">
+  <div><h3>${s.title}</h3><div class="muted">${s.venue} · ${s.screen} · ${s.show_date} · ${s.show_time}</div></div>
+  <button onclick='openShow(${JSON.stringify(s)})'>View Seats</button>
+ </div>`).join("");
+}
+async function openShow(show){
+ currentShow=show;selected=[];
+ document.getElementById("shows").style.display="none";
+ document.getElementById("booking").style.display="block";
+ await renderSeats();
+}
+async function renderSeats(){
+ const j=await api("/api/shows/"+currentShow.id+"/seats");
+ const grouped={};j.data.forEach(s=>(grouped[s.row_name]??=[]).push(s));
+ document.getElementById("booking").innerHTML=`
+ <div class="card">
+ <button onclick="back()">← Shows</button>
+ <h2>${currentShow.title}</h2><p class="muted">${currentShow.venue} · ${currentShow.show_date} · ${currentShow.show_time}</p>
+ <div class="screen">SCREEN</div>
+ ${Object.entries(grouped).map(([row,seats])=>`<div class="row">${seats.map(s=>`<button class="seat ${s.status.toLowerCase()}" ${s.status!=="AVAILABLE"?"disabled":""} onclick="toggleSeat('${s.id}')">${s.id}</button>`).join("")}</div>`).join("")}
+ <div class="legend">
+  <span><i class="dot" style="background:#27272a"></i>Available</span>
+  <span><i class="dot" style="background:#7c3aed"></i>Selected</span>
+  <span><i class="dot" style="background:#b45309"></i>Reserved</span>
+  <span><i class="dot" style="background:#dc2626"></i>Booked</span>
+ </div>
+ </div>
+ <div class="card summary">
+   <div><div class="muted">Selected</div><strong id="selected">${selected.join(", ")||"None"}</strong></div>
+   <button onclick="hold()">Reserve seats</button>
+ </div>`;
+}
+function toggleSeat(id){if(selected.includes(id))selected=selected.filter(x=>x!==id);else selected.push(id);renderSeats()}
+async function hold(){
+ if(!selected.length)return toast("Select at least one seat");
+ try{
+  const j=await api("/api/shows/"+currentShow.id+"/hold-seats",{method:"POST",body:JSON.stringify({userId,seatIds:selected})});
+  expiresAt=j.data.expiresAt; startTimer();
+  const seats=[...selected];const amount=seats.reduce((sum,id)=>sum+(id[0]<"C"?350:250),0)+60;
+  document.getElementById("booking").innerHTML+=`
+   <div class="card summary"><div><div class="muted">Reservation expires in</div><div class="timer" id="timer">10:00</div></div>
+   <div><strong>₹${amount}</strong><br><span class="muted">${seats.join(", ")}</span></div>
+   <button onclick="pay('SUCCESS')">Pay ₹${amount}</button>
+   <button onclick="pay('FAILED')" style="background:#52525b">Simulate Failure</button>
+   </div>`;
+  toast("Seats reserved for 10 minutes");
+ }catch(e){toast(e.message||"Seat reservation failed");await renderSeats()}
+}
+function startTimer(){clearInterval(timer);timer=setInterval(()=>{
+ const ms=new Date(expiresAt)-Date.now();
+ const sec=Math.max(0,Math.floor(ms/1000));
+ const el=document.getElementById("timer");if(el)el.textContent=`${String(Math.floor(sec/60)).padStart(2,"0")}:${String(sec%60).padStart(2,"0")}`;
+ if(sec<=0){clearInterval(timer);toast("Reservation expired");selected=[];renderSeats()}
+},250)}
+async function pay(result){
+ try{
+  const key=crypto.randomUUID();
+  const j=await api("/api/payments/mock",{method:"POST",body:JSON.stringify({showId:currentShow.id,userId,seatIds:selected,paymentResult:result,idempotencyKey:key})});
+  const b=j.data;
+  document.getElementById("booking").innerHTML=`<div class="card">
+   <h2>${b.bookingStatus==="CONFIRMED"?"🎉 Booking Confirmed":"Payment "+b.paymentStatus}</h2>
+   <p class="muted">Booking ID</p><h3>${b.bookingId}</h3>
+   <p>${currentShow.title} · ${currentShow.venue} · ${currentShow.show_date} · ${currentShow.show_time}</p>
+   <p>Seats: <strong>${selected.join(", ")}</strong></p>
+   <p>Total: <strong>₹${b.amount}</strong></p>
+   <button onclick="back()">Book another show</button>
+  </div>`;
+  clearInterval(timer);
+ }catch(e){toast(e.message||"Payment failed")}
+}
+function back(){clearInterval(timer);currentShow=null;selected=[];document.getElementById("booking").style.display="none";document.getElementById("shows").style.display="block";loadShows()}
+loadShows();
+</script>
+</body>
+</html>
